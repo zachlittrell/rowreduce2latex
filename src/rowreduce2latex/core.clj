@@ -1,138 +1,81 @@
 (ns rowreduce2latex.core
-  (:require [seesaw.table :as table]
-            [clojure.string :as str])
-  (:use [seesaw core]))
+  (:require [clojure.string :as str])
+  (:use [rowreduce2latex history matrix templates]
+        [seesaw core]))
 
-(defn actions->latex-code [actions]
+(defn action->latex-code [action]
+  "Converts an action into latex code"
+  (str (if-let [transition (:transition action)]
+         (str "\n\n" (matrix-transition->string transition) "\n\n")
+         "")
+       (matrix->string (:matrix action))))
+
+(defn history->latex-code [history]
+  "Converts all the actions in history into latex code"
   (loop [code ""
-         actions actions]
-    (if (empty? actions)
-      code
-      (let [{:keys [transition matrix]} (peek actions)]
-        (recur 
-          (str (if-let [[prev next] transition]
-                 (str "$$\\mattrans{"prev"}{"next"}$$\n\n")
-                 "")
-               "$$\\begin{bmatrix}"
-               (str/join "" (for [row matrix]
-                              (str (str/join "&" row) "\\\\")))
-               "\\end{bmatrix}$$\n\n"
-               code)
-          (pop actions))))))
+         history history]
+    (let [code* (str (action->latex-code (current history)) code)]
+      (if (beginning? history)
+        code*
+        (recur code* (undo history))))))
+
+(defn matrix-op->button [name op! table *history*]
+  "Returns a button that performs op! on the table, and adds the resulting
+   action to *history*."
+  (action :name name
+          :handler (fn [_]
+                     (let [desc (op! table)]
+                       (swap! *history* add
+                              {:matrix (table->matrix table)
+                               :transition desc})))))
 
 
-(defn str->row-index [text]
-  (-> text
-     (.charAt 0)
-     (int)
-     (- 65)))
-
-(defn make-matrix-grid [actions]
-  (let [matrix (read-string (input "Input matrix"))]
-    (swap! actions conj {:matrix matrix})
-    (table :model [:columns (for [n (range 1 (inc (count (first matrix))))]
-                              (keyword (str "x_" n)))
-                   :rows matrix])))
-
-(defn set-matrix! [matrix-grid matrix]
-  (doseq [[row index] (map list matrix 
-                           (range 0 (table/row-count matrix-grid)))]
-    (println row matrix)
-    (table/update-at! matrix-grid
-                      index
-                      row)))
-
-
-(defn get-matrix [matrix-grid]
-  (->> (table/value-at matrix-grid
-                   (range 0 (table/row-count matrix-grid)))
-       (map sort)
-       (map (partial map second))
-       (map (partial into []))
-       (into [])))
-
-                     
-
-(defn make-operations-panel [actions matrix-grid]
+(defn make-operations-panel [*history* table]
+  "Returns the panel of buttons for creating the matrix."
   (flow-panel
-    :items [(action :name "Multiply Row"
-                    :handler (fn [_]
-                               (let [row-text (input "Row?")
-                                     row (str->row-index row-text)
-                                     scalar (read-string (input "Scalar?"))]
-                                 (table/update-at! 
-                                   matrix-grid
-                                   row
-                                   (into {} 
-                                         (for [[key val] (table/value-at 
-                                                            matrix-grid
-                                                            row)]
-                                            [key (* scalar val)])))
-                                 (swap! actions conj
-                                        {:transition
-                                         [row-text
-                                          (str "(" scalar ")" row-text)]
-                                         :matrix (get-matrix matrix-grid)}))))
-            (action :name "Add Row"
-                    :handler (fn [_]
-                               (let [row1-text (input "Row 1?")
-                                     row2-text (input "Row 2?")
-                                     row1 (str->row-index row1-text)
-                                     row2 (str->row-index row2-text)
-                                     row2-scalar (read-string (input "Row 2 Scalar"))
-                                     row1* (table/value-at matrix-grid row1)
-                                     row2* (table/value-at matrix-grid row2)]
-                                 (table/update-at!
-                                   matrix-grid
-                                   row1
-                                   (into {}
-                                         (for [[key val] row1*]
-                                           [key (+ val (* row2-scalar 
-                                                          (key row2*)))])))
-                                 (swap! actions conj
-                                        {:transition
-                                         [row1-text
-                                          (str row1-text " + (" row2-scalar ")" row2-text)]
-                                         :matrix (get-matrix matrix-grid)}))))
-            (action :name "Swap Rows"
-                    :handler (fn [_]
-                               (let [row1-text (input "Row 1?")
-                                     row2-text (input "Row 2?")
-                                     row1 (str->row-index row1-text)
-                                     row2 (str->row-index row2-text)
-                                     row1* (table/value-at matrix-grid row1)
-                                     row2* (table/value-at matrix-grid row2)]
-                                 (table/update-at! matrix-grid
-                                                   row1 row2*)
-                                 (table/update-at! matrix-grid
-                                                   row2 row1*)
-                                 (swap! actions conj 
-                                        {:transition
-                                         [(str row1-text "," row2-text)
-                                          (str row2-text "," row1-text)]
-                                         :matrix (get-matrix matrix-grid)}))))
+    :items [(matrix-op->button "Multiply Row"
+                               mult-row!
+                               table
+                               *history*)
+            (matrix-op->button "Add Row"
+                               add-rows!
+                               table
+                               *history*)
+            (matrix-op->button "Swap Rows"
+                               swap-rows!
+                               table
+                               *history*)
             (action :name "Undo"
                     :handler (fn [_]
-                               (let [actions* @actions]
-                                 (when (< 1 (count actions*))
-                                   (swap! actions pop)
-                                   (set-matrix! matrix-grid (:matrix (peek (pop actions*))))))))
+                               (let [history* @*history*
+                                     undone (undo history*)]
+                                   (swap! *history* (constantly undone))
+                                   (set-matrix! table 
+                                                (:matrix (current undone))))))
+            (action :name "Redo"
+                    :handler (fn [_]
+                               (let [history* @*history*
+                                     redone (redo history*)]
+                                 (swap! *history* (constantly redone))
+                                 (set-matrix! table
+                                              (:matrix (current redone))))))
             (action :name "Output"
                     :handler (fn [_]
-                               (show! (frame :content (text :text (actions->latex-code @actions)
+                               (show! (frame :content (text :text (history->latex-code @*history*)
                                                      :multi-line? true)
                                       :on-close :dispose))))
-            ]))
+          ]))
 
 (defn make-gui []
-  (let [actions (atom [])
-        matrix-grid (make-matrix-grid actions)
-        operations-panel (make-operations-panel actions matrix-grid)]
+  "Returns the gui for the program"
+  (let [{:keys [matrix table]} (matrix-table)
+        *history* (atom (history {:matrix matrix}))
+        operations-panel (make-operations-panel *history* table)]
   (frame :title "Latex Matrix Ops"
          :on-close :exit
          :size [500 :by 500]
          :content (border-panel
-                    :center (scrollable matrix-grid)
+                    :center (scrollable table)
                     :north operations-panel))))
 
 
