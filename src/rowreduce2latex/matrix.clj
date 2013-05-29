@@ -1,5 +1,6 @@
 (ns rowreduce2latex.matrix
-  (:require [seesaw.table :as table])
+  (:require [clojure.string :as str]
+            [seesaw.table :as table])
   (:use [rowreduce2latex templates]
         [seesaw core]))
 
@@ -12,9 +13,11 @@
       (- 65)))
 
 (defn parse-scalar [s]
-  (cond (re-find #"\d+" s) (bigint s)
-        (re-find #"(\d+)?\.\d+" (bigdec s))
-        (re-find #"\d+/\d+" (read-string s))
+  "Parses the string (if possible) into one of the accept scalar types:
+   integers, decimals, or ratios."
+  (cond (re-find #"^\d+$" s) (bigint s)
+        (re-find #"^(\d+)?\.\d+$" s) (bigdec s)
+        (re-find #"^\d+/\d+$" s) (read-string s)
         :else               (throw (Exception. "Not a valid scalar."))))
 
 (defn table->matrix [table]
@@ -32,11 +35,28 @@
                            (range 0 (table/row-count table)))]
     (table/update-at! table index row)))
 
+(defn string->matrix [matrix-text]
+  "Converts a string encoding a matrix into nested vectors of scalars."
+  (let [rows (filter not-empty (str/split-lines matrix-text))]
+    (vec (for [row rows]
+           (vec (for [cell (filter not-empty (str/split row #"\s+"))]
+                  (parse-scalar cell)))))))
+
+
 (defn matrix-table []
   "Returns a map whose keys are:
     :matrix a matrix given by the user
     :table  a table whose values are given by matrix."
-  (let [matrix (read-string (input "Input Matrix"))]
+  (let [textbox (text :multi-line? true)
+        matrix-text (show! (dialog :option-type :ok-cancel
+                                   :size [450 :by 400]
+                                   :content 
+                                     (border-panel 
+                                       :north "Enter matrix. Separate rows by new lines and columns by spaces."
+                                       :center (scrollable textbox))
+                                   :success-fn 
+                                     (fn [_] (value textbox))))
+        matrix (string->matrix matrix-text)] 
     {:matrix matrix
      :table (table :model [:columns (for [n (range 1 (inc (count (first matrix))))]
                                       (keyword (str "x_" n)))
